@@ -106,20 +106,12 @@ def load_stock_states(symbol):
     return pd.DataFrame()
 
 @st.cache_resource
-def load_models():
-    import sys
-    if str(SRC_DIR) not in sys.path:
-        sys.path.append(str(SRC_DIR))
-        
-    baseline_model = None
-    nh_model = None
-    
-    if (SRC_DIR / "baseline_model.pkl").exists():
-        baseline_model = joblib.load(SRC_DIR / "baseline_model.pkl")
-    if (SRC_DIR / "nh_model_nifty.pkl").exists():
-        nh_model = joblib.load(SRC_DIR / "nh_model_nifty.pkl")
-        
-    return baseline_model, nh_model
+def load_hmm_metrics():
+    metrics = {}
+    if (DATA_DIR / "hmm_metrics.json").exists():
+        with open(DATA_DIR / "hmm_metrics.json", "r") as f:
+            metrics = json.load(f)
+    return metrics
 
 @st.cache_resource
 def load_xgb():
@@ -138,7 +130,7 @@ def load_xgb_features():
 with st.spinner("Loading NSE Regime Engine..."):
     log_returns, volatility, price_levels, events_df, disagreements = load_parquet_data()
     baseline_nifty, nh_nifty = load_nifty_states()
-    baseline_model, nh_model = load_models()
+    hmm_metrics = load_hmm_metrics()
     xgb_model = load_xgb()
     xgb_features = load_xgb_features()
 
@@ -160,24 +152,24 @@ date_range = st.sidebar.date_input("Date Range", value=(default_start, max_date)
 st.sidebar.divider()
 
 st.sidebar.markdown("### Model Statistics")
-if baseline_model and not nh_nifty.empty and "^NSEI" in log_returns.columns:
-    try:
-        nifty_returns = log_returns[['^NSEI']].dropna().values
-        baseline_ll = baseline_model.score(nifty_returns)
-        nh_ll = nh_model.score(nifty_returns) if nh_model else 0
-        ll_imp = ((nh_ll - baseline_ll) / abs(baseline_ll)) * 100 if baseline_ll != 0 else 0
-        
-        st.sidebar.text(f"Baseline HMM LL: {baseline_ll:.2f}")
-        st.sidebar.text(f"NH-HMM LL: {nh_ll:.2f}")
-        st.sidebar.text(f"LL Improvement: {ll_imp:.2f}%")
-        st.sidebar.text(f"Training Days (T): {len(nifty_returns)}")
-    except:
-        st.sidebar.text("Baseline HMM LL: N/A")
+if hmm_metrics and "^NSEI" in log_returns.columns:
+    baseline_ll = hmm_metrics.get("baseline_ll", 0)
+    nh_ll = hmm_metrics.get("nh_ll", 0)
+    ll_imp = ((nh_ll - baseline_ll) / abs(baseline_ll)) * 100 if baseline_ll != 0 else 0
+    
+    st.sidebar.text(f"Baseline HMM LL: {baseline_ll:.2f}")
+    st.sidebar.text(f"NH-HMM LL: {nh_ll:.2f}")
+    st.sidebar.text(f"LL Improvement: {ll_imp:.2f}%")
+    st.sidebar.text(f"Training Days (T): {len(log_returns[['^NSEI']].dropna())}")
 else:
     st.sidebar.text("Baseline HMM LL: N/A")
 
-if nh_model and hasattr(nh_model, 'A_normal_') and hasattr(nh_model, 'A_event_'):
-    norm_diff = np.linalg.norm(nh_model.A_event_ - nh_model.A_normal_, ord='fro')
+A_normal = hmm_metrics.get("A_normal")
+A_event = hmm_metrics.get("A_event")
+if A_normal and A_event:
+    A_normal = np.array(A_normal)
+    A_event = np.array(A_event)
+    norm_diff = np.linalg.norm(A_event - A_normal, ord='fro')
     st.sidebar.text(f"A_event - A_norm (Fro): {norm_diff:.4f}")
 
 st.sidebar.text("BIC Scores (N=2,3,4):")
@@ -232,7 +224,6 @@ if not stock_states.empty:
                 days_since_event = (max_date - last_event['event_date']).days
 
     # XGBoost Signal - Real XGBoost probability using all model features
-    import json
     feature_path = SRC_DIR / "xgb_features.json"
     if feature_path.exists():
         with open(feature_path, "r") as f:
@@ -355,27 +346,27 @@ if selected_ticker in price_levels.columns and not stock_states.empty:
 # ---------------------------------------------------------
 # SECTION 4: TRANSITION MATRIX HEATMAPS
 # ---------------------------------------------------------
-st.markdown("### Event Impact on Transition Probabilities")
+st.markdown("### Regime Transition Probabilities")
+st.markdown("Non-Homogeneous HMMs adapt their transition matrix during corporate event windows. Notice how transitions into the `Bear/Crash` state become highly elevated.")
 
-if nh_model and hasattr(nh_model, 'A_normal_') and hasattr(nh_model, 'A_event_'):
-    col1, col2 = st.columns(2)
-    state_labels = ["Bear", "Sideways", "Bull"] 
+if A_normal is not None and A_event is not None:
+    col_t1, col_t2 = st.columns(2)
     
-    fig_norm = px.imshow(nh_model.A_normal_, 
-                         labels=dict(x="To", y="From", color="Probability"),
-                         x=state_labels, y=state_labels,
-                         color_continuous_scale="Blues", text_auto=".2f")
+    fig_norm = px.imshow(A_normal, 
+                         labels=dict(x="To State", y="From State", color="Prob"),
+                         x=["Bear", "Neutral", "Bull"], y=["Bear", "Neutral", "Bull"],
+                         text_auto='.2f', color_continuous_scale='Blues')
     fig_norm.update_layout(title="A_normal (Regular Days)", template="plotly_dark")
-    col1.plotly_chart(fig_norm, use_container_width=True)
+    col_t1.plotly_chart(fig_norm, use_container_width=True)
     
-    fig_event = px.imshow(nh_model.A_event_, 
-                          labels=dict(x="To", y="From", color="Probability"),
-                          x=state_labels, y=state_labels,
-                          color_continuous_scale="Blues", text_auto=".2f")
+    fig_event = px.imshow(A_event, 
+                          labels=dict(x="To State", y="From State", color="Prob"),
+                          x=["Bear", "Neutral", "Bull"], y=["Bear", "Neutral", "Bull"],
+                          text_auto='.2f', color_continuous_scale='Reds')
     fig_event.update_layout(title="A_event (Event Window ±5 days)", template="plotly_dark")
-    col2.plotly_chart(fig_event, use_container_width=True)
+    col_t2.plotly_chart(fig_event, use_container_width=True)
     
-    norm_diff = np.linalg.norm(nh_model.A_event_ - nh_model.A_normal_, ord='fro')
+    norm_diff = np.linalg.norm(A_event - A_normal, ord='fro')
     st.markdown(f"**Frobenius Norm Difference (A_event - A_normal):** `{norm_diff:.4f}`")
 
 # ---------------------------------------------------------
