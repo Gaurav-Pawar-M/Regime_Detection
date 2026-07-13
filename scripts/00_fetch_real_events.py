@@ -1,11 +1,12 @@
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import time
 import os
+import shutil
+import numpy as np
+from datetime import datetime
+from bse import BSE
 
-# Unique list of 19 stocks (TCS.NS was repeated in the prompt, counting uniquely we have 18, 
-# but if including it, we'll just process the unique list)
 STOCKS = [
     "ASIANPAINT.NS", "AXISBANK.NS", "BAJAJ-AUTO.NS", "DRREDDY.NS", "HDFCBANK.NS",
     "HINDUNILVR.NS", "ICICIBANK.NS", "INFY.NS", "KOTAKBANK.NS", "LT.NS",
@@ -22,179 +23,287 @@ BSE_MAPPING = {
     "TCS.NS": "532540", "TATAMOTORS.NS": "500570", "WIPRO.NS": "507685"
 }
 
-START_DATE = pd.to_datetime("2019-01-01")
-END_DATE = pd.to_datetime("2026-07-04")
+START_DATE = "2019-01-01"
+END_DATE = "2026-07-04"
 
-def fetch_screener(symbol):
-    """Scrapes screener.in for quarterly results, board meetings, and AGMs."""
-    short_sym = symbol.replace('.NS', '')
-    url = f"https://www.screener.in/company/{short_sym}/consolidated/"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+REPORTING_LAG = {
+    3:  (15, 45),   # Q4/FY results (period ending Mar) -> ~mid-Apr to mid-May
+    6:  (15, 35),   # Q1 (period ending Jun) -> ~mid-Jul to early-Aug
+    9:  (15, 45),   # Q2 (period ending Sep) -> ~mid-Oct to mid-Nov
+    12: (15, 35),   # Q3 (period ending Dec) -> ~mid-Jan to early-Feb
+}
+
+
+def robust_request(func, *args, **kwargs):
+    """Executes a function with retries and backoff."""
+    for attempt in range(3):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if attempt == 2:
+                raise e
+            time.sleep(5)
+
+
+def fetch_bse_events(symbol, start_dt, end_dt):
+    """Case 1: Primary source via BSE API."""
+    scripcode = BSE_MAPPING.get(symbol)
+    if not scripcode:
+        return []
     
     events = []
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Check quarters table and announcements list
-        # We parse the generic announcements feed because Screener dynamically lists exact dates there.
-        # Alternatively, the quarters table headers (like 'Mar 2023') are extracted as a fallback Results proxy
-        
-        announcements_ul = soup.find('ul', id='announcements')
-        if announcements_ul:
-            for li in announcements_ul.find_all('li'):
-                text = li.text.lower()
-                event_type = None
+    
+    def get_bse_page(page):
+        with BSE(download_folder='./bse_cache') as bse_client:
+            return bse_client.announcements(
+                scripcode=scripcode, 
+                from_date=start_dt, 
+                to_date=end_dt,
+                page_no=page
+            )
+
+    page = 1
+    while True:
+        try:
+            res = robust_request(get_bse_page, page)
+            table = res.get('Table', []) if isinstance(res, dict) else []
+            if not table:
+                break
                 
+            for item in table:
+                text = (str(item.get('HEADLINE', '')) + " " + 
+                        str(item.get('CATEGORYNAME', '')) + " " + 
+                        str(item.get('NEWSSUB', ''))).lower()
+                
+                ev_type = None
                 if 'result' in text:
-                    event_type = "Results"
+                    ev_type = 'Results'
                 elif 'board meeting' in text:
-                    event_type = "Board Meeting"
+                    ev_type = 'Board Meeting'
                 elif 'agm' in text or 'annual general meeting' in text:
-                    event_type = "AGM"
+                    ev_type = 'AGM'
                 
-                if event_type:
-                    # The date is usually printed before the link or inside a span
-                    date_div = li.find('div', class_='date') or li.find('span')
-                    if date_div:
-                        try:
-                            date_str = date_div.text.strip()
-                            dt = pd.to_datetime(date_str)
-                            events.append({
-                                'symbol': symbol,
-                                'event_date': dt,
-                                'event_type': event_type
-                            })
-                        except Exception:
-                            pass
-                            
-        # Look for the quarters table dates (fallback for Results if announcements failed)
-        if not events:
-            quarters_table = soup.find('section', id='quarters')
-            if quarters_table:
-                ths = quarters_table.find_all('th')
-                for th in ths:
-                    th_text = th.text.strip()
-                    if th_text:
-                        try:
-                            # parse 'Mar 2023' as end of month proxy for the result quarter
-                            dt = pd.to_datetime(th_text) + pd.offsets.MonthEnd(0)
-                            events.append({
-                                'symbol': symbol,
-                                'event_date': dt,
-                                'event_type': "Results"
-                            })
-                        except Exception:
-                            pass
-
-        return pd.DataFrame(events) if events else pd.DataFrame(columns=['symbol', 'event_date', 'event_type'])
-    except Exception as e:
-        return pd.DataFrame(columns=['symbol', 'event_date', 'event_type'])
-
-def fetch_bse(symbol):
-    """Fallback query to BSE API if Screener fails."""
-    bse_code = BSE_MAPPING.get(symbol)
-    if not bse_code: 
-        return pd.DataFrame(columns=['symbol', 'event_date', 'event_type'])
-    
-    url = "https://api.bseindia.com/BseIndiaAPI/api/DefaultData/w"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    params = {"scripcode": bse_code}
-    
-    events = []
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        
-        # Process the JSON API response (if it successfully returns an API payload)
-        if response.headers.get('content-type', '').startswith('application/json'):
-            data = response.json()
-            if isinstance(data, list):
-                for item in data:
-                    subject = str(item.get('Subject', '')).lower() + str(item.get('Headline', '')).lower()
+                if ev_type:
                     date_str = item.get('NEWS_DT') or item.get('DT_TM')
-                    
-                    event_type = None
-                    if 'result' in subject:
-                        event_type = "Results"
-                    elif 'board meeting' in subject:
-                        event_type = "Board Meeting"
-                    elif 'agm' in subject or 'annual general' in subject:
-                        event_type = "AGM"
-                    
-                    if event_type and date_str:
-                        dt = pd.to_datetime(date_str)
+                    if date_str:
+                        dt = pd.to_datetime(date_str).normalize()
                         events.append({
                             'symbol': symbol,
                             'event_date': dt,
-                            'event_type': event_type
+                            'event_type': ev_type,
+                            'date_source': 'BSE_API',
+                            'is_estimated': False
                         })
-    except Exception:
-        pass
+            
+            # BSE page size is typically 50. If fewer are returned, it's the last page.
+            if len(table) < 50:
+                break
+                
+            page += 1
+            time.sleep(2) # polite delay
+            
+        except Exception as e:
+            print(f"[{symbol}] BSE API fetch failed on page {page}: {e}")
+            break
+            
+    return events
+
+
+def fetch_nse_events(symbol, start_dt, end_dt):
+    """Case 2: Secondary source via NSE API."""
+    symbol_no_ns = symbol.replace('.NS', '')
+    url = "https://www.nseindia.com/api/corporate-announcements"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://www.nseindia.com"}
     
-    return pd.DataFrame(events) if events else pd.DataFrame(columns=['symbol', 'event_date', 'event_type'])
+    session = requests.Session()
+    
+    def get_nse_chunk(s_date, e_date):
+        def _call():
+            session.get("https://www.nseindia.com", headers=headers, timeout=10)
+            time.sleep(1)
+            params = {
+                'index': 'equities',
+                'symbol': symbol_no_ns,
+                'from_date': s_date.strftime('%d-%m-%Y'),
+                'to_date': e_date.strftime('%d-%m-%Y')
+            }
+            resp = session.get(url, headers=headers, params=params, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        return robust_request(_call)
+        
+    events = []
+    current_start = start_dt
+    
+    while current_start <= end_dt:
+        current_end = min(current_start + pd.DateOffset(months=3), end_dt)
+        try:
+            data = get_nse_chunk(current_start, current_end)
+            if data and isinstance(data, list):
+                for item in data:
+                    text = (str(item.get('desc', '')) + " " + 
+                            str(item.get('attchmntText', '')) + " " + 
+                            str(item.get('subject', ''))).lower()
+                            
+                    ev_type = None
+                    if 'result' in text:
+                        ev_type = 'Results'
+                    elif 'board meeting' in text:
+                        ev_type = 'Board Meeting'
+                    elif 'agm' in text or 'annual general meeting' in text:
+                        ev_type = 'AGM'
+                    
+                    if ev_type:
+                        date_str = item.get('an_dt') or item.get('sort_date')
+                        if date_str:
+                            dt = pd.to_datetime(date_str).normalize()
+                            events.append({
+                                'symbol': symbol,
+                                'event_date': dt,
+                                'event_type': ev_type,
+                                'date_source': 'NSE_API',
+                                'is_estimated': False
+                            })
+                            
+            time.sleep(2) # polite delay
+            
+        except Exception as e:
+            print(f"[{symbol}] NSE API fetch failed for chunk {current_start.date()} to {current_end.date()}: {e}")
+        
+        current_start = current_end + pd.Timedelta(days=1)
+        
+    return events
+
+
+def get_estimated_results(symbol, start_dt, end_dt):
+    """Case 3: Last-resort estimate using reporting lags."""
+    events = []
+    start_year = start_dt.year
+    end_year = end_dt.year
+    
+    for year in range(start_year, end_year + 1):
+        quarter_ends = [(3, 31), (6, 30), (9, 30), (12, 31)]
+        for m, d in quarter_ends:
+            q_end = pd.Timestamp(year, m, d)
+            if start_dt <= q_end <= end_dt:
+                min_lag, max_lag = REPORTING_LAG[m]
+                mid_lag = (min_lag + max_lag) // 2
+                est_dt = q_end + pd.Timedelta(days=mid_lag)
+                events.append({
+                    'symbol': symbol,
+                    'event_date': est_dt,
+                    'event_type': 'Results',
+                    'date_source': 'ESTIMATED_LAG',
+                    'is_estimated': True
+                })
+    return events
+
+
+def merge_events(df1, df2, symbol):
+    if df1.empty and df2.empty:
+        return pd.DataFrame()
+    df = pd.concat([df1, df2], ignore_index=True)
+    if df.empty:
+        return df
+        
+    df = df.sort_values('event_date')
+    final_rows = []
+    
+    for ev_type in df['event_type'].unique():
+        sub_df = df[df['event_type'] == ev_type].copy()
+        
+        # Cluster dates that fall within 45 days of each other (same quarterly event)
+        sub_df['cluster'] = (sub_df['event_date'].diff().dt.days > 45).cumsum()
+        
+        for _, group in sub_df.groupby('cluster'):
+            min_date_row = group.loc[group['event_date'].idxmin()]
+            
+            if len(group) > 1:
+                max_date = group['event_date'].max()
+                min_date = group['event_date'].min()
+                # 3 calendar days covers typical 2 trading days disagreement
+                if (max_date - min_date).days > 3:
+                    sources = group['date_source'].unique()
+                    print(f"[{symbol}] {ev_type} disagreement > 2 days: {min_date.date()} vs {max_date.date()} (Sources: {list(sources)}). Keeping {min_date.date()}.")
+            
+            final_rows.append(min_date_row)
+            
+    return pd.DataFrame(final_rows)
+
 
 def main():
-    all_events = []
+    print("Starting real events extraction pipeline...")
+    start_dt = pd.to_datetime(START_DATE)
+    end_dt = pd.to_datetime(END_DATE)
     
-    print("Starting data extraction...")
-    for i, symbol in enumerate(STOCKS, 1):
-        try:
-            df = fetch_screener(symbol)
-            source = "Screener"
-            
-            if df.empty:
-                df = fetch_bse(symbol)
-                source = "BSE fallback"
-            
-            if not df.empty:
-                df['event_date'] = pd.to_datetime(df['event_date'])
-                df = df[(df['event_date'] >= START_DATE) & (df['event_date'] <= END_DATE)]
-                
-            n_events = len(df)
-            if n_events > 0:
-                print(f"[{i}/{len(STOCKS)}] {symbol}: Found {n_events} events ({source})")
-                all_events.append(df)
-            else:
-                print(f"[{i}/{len(STOCKS)}] {symbol}: WARNING - Both Screener and BSE failed to find events.")
-                
-            # Polite scraping delay
-            time.sleep(2)
-        except Exception as e:
-            # Catch all exception so it never crashes the script per stock
-            print(f"[{i}/{len(STOCKS)}] {symbol}: ERROR - {str(e)}")
-
-    if all_events:
-        final_df = pd.concat(all_events, ignore_index=True)
+    all_final_events = []
+    
+    for symbol in STOCKS:
+        print(f"\nProcessing {symbol}...")
+        df_bse = pd.DataFrame(fetch_bse_events(symbol, start_dt, end_dt))
+        df_nse = pd.DataFrame(fetch_nse_events(symbol, start_dt, end_dt))
+        df_est = pd.DataFrame(get_estimated_results(symbol, start_dt, end_dt))
         
-        # Sort and drop duplicates as requested
-        final_df = final_df.sort_values(by='event_date', ascending=True)
-        final_df = final_df.drop_duplicates(subset=['symbol', 'event_date'])
+        merged_real = merge_events(df_bse, df_nse, symbol)
+        
+        final_all = [merged_real] if not merged_real.empty else []
+        
+        if not df_est.empty:
+            for _, est_row in df_est.iterrows():
+                # Check if there is a real 'Results' event within 60 days of this estimate
+                if not merged_real.empty:
+                    real_results = merged_real[merged_real['event_type'] == 'Results']
+                    if not real_results.empty:
+                        min_dist = (real_results['event_date'] - est_row['event_date']).abs().min().days
+                        if min_dist <= 60:
+                            continue # Has real event
+                # Add fallback
+                final_all.append(pd.DataFrame([est_row]))
+                
+        if final_all:
+            res_df = pd.concat(final_all, ignore_index=True)
+            all_final_events.append(res_df)
+            counts = res_df.groupby('date_source').size().to_dict()
+            print(f"[{symbol}] Saved {len(res_df)} events. Sources: {counts}")
+        else:
+            print(f"[{symbol}] WARNING: Zero events saved.")
+
+    if all_final_events:
+        final_df = pd.concat(all_final_events, ignore_index=True)
+        final_df = final_df.sort_values(by=['symbol', 'event_date'])
         
         # Cast to datetime64[ms]
         final_df['event_date'] = final_df['event_date'].astype('datetime64[ms]')
         
-        # Safe pathing to ensure data is dumped cleanly to the correct place
         out_path = os.path.join('data', 'events_table_real.parquet')
-        
-        # Ensure data folder exists
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         
+        if os.path.exists(out_path):
+            backup_path = os.path.join('data', 'events_table_real_OLD.parquet')
+            shutil.copy(out_path, backup_path)
+            print(f"\nBacked up old events to {backup_path}")
+            
         final_df.to_parquet(out_path, index=False)
         
-        total = len(final_df)
-        mean_events = total / len(STOCKS)
+        # Validation checks
+        quarter_end_dates = {(3,31), (6,30), (9,30), (12,31)}
+        results_rows = final_df[final_df['event_type'] == 'Results']
+        on_quarter_end = results_rows['event_date'].apply(lambda d: (d.month, d.day) in quarter_end_dates)
+        pct_suspicious = on_quarter_end.mean() * 100
         
-        print("\nSUMMARY")
-        print(f"Total events: {total}")
-        print(f"Events per stock (mean): {mean_events:.1f}")
-        print(f"Date range: {final_df['event_date'].min().strftime('%Y-%m-%d')} to {final_df['event_date'].max().strftime('%Y-%m-%d')}")
-        print(f"Saved to ../{out_path}")
+        print(f"\nResults events falling exactly on quarter-end date: {pct_suspicious:.1f}%")
+        if pct_suspicious > 5:
+            print("WARNING: High % of Results dates land exactly on quarter-end — this is the signature of a proxy-date bug. Investigate before trusting this data.")
+            
+        print("\nSUMMARY TABLE BY SOURCE:")
+        summary = final_df.groupby(['symbol', 'event_type', 'date_source']).size().unstack(fill_value=0)
+        print(summary)
         
-        if total < 50:
-            print("WARNING: Very few events scraped")
+        print(f"\nTotal rows extracted: {len(final_df)}")
+        print(f"Saved cleanly to {out_path}")
+        
     else:
-        print("\nWARNING: No events scraped at all!")
+        print("\nFATAL ERROR: No events extracted for any stock.")
 
 if __name__ == '__main__':
     main()

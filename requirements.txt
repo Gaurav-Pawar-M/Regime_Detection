@@ -9,3 +9,4 @@ plotly==6.8.0
 pyarrow==24.0.0
 fastparquet==2026.5.0
 joblib>=1.2.0
+bse==3.3.0
