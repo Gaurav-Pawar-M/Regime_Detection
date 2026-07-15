@@ -65,7 +65,7 @@ SRC_DIR = BASE_DIR / "src"
 # DATA LOADING (Cached)
 # ---------------------------------------------------------
 @st.cache_data
-def load_parquet_data():
+def load_parquet_data(cache_bust="v2"):
     log_returns = pd.read_parquet(DATA_DIR / "log_returns.parquet")
     volatility = pd.read_parquet(DATA_DIR / "volatility.parquet")
     price_levels = pd.read_parquet(DATA_DIR / "price_levels.parquet")
@@ -140,7 +140,7 @@ def load_xgb_features():
     return pd.DataFrame()
 
 with st.spinner("Loading NSE Regime Engine..."):
-    log_returns, volatility, price_levels, events_df, disagreements = load_parquet_data()
+    log_returns, volatility, price_levels, events_df, disagreements = load_parquet_data("v2")
     baseline_nifty, nh_nifty = load_nifty_states()
     hmm_metrics = load_hmm_metrics()
     hmm_metrics_avg = load_hmm_metrics_avg()
@@ -392,6 +392,7 @@ if A_normal is not None and A_event is not None:
     if selected_matrix_view == "Average (17 stocks)":
         st.caption("This heatmap shows the 17-stock average. Individual stocks vary substantially -- standard deviation exceeds the mean difference in every transition cell, meaning no single stock closely matches this average pattern. See the per-stock breakdown for actual stock-level dynamics.")
         disp_A_normal, disp_A_event = A_normal, A_event
+        matrix_title_label = "17-stock average"
     else:
         matrix_path = DATA_DIR / f"matrices_{selected_matrix_view}.json"
         if matrix_path.exists():
