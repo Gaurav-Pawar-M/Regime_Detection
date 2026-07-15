@@ -108,9 +108,19 @@ def load_stock_states(symbol):
 
 @st.cache_resource
 def load_hmm_metrics():
+    # Note: Transition matrices in hmm_metrics.json are known-broken (random Dirichlet noise)
+    # due to NIFTY lacking event indicators during EM fit. We only load it for LL stats.
     metrics = {}
     if (DATA_DIR / "hmm_metrics.json").exists():
         with open(DATA_DIR / "hmm_metrics.json", "r") as f:
+            metrics = json.load(f)
+    return metrics
+
+@st.cache_resource
+def load_hmm_metrics_avg():
+    metrics = {}
+    if (DATA_DIR / "hmm_metrics_per_stock_avg.json").exists():
+        with open(DATA_DIR / "hmm_metrics_per_stock_avg.json", "r") as f:
             metrics = json.load(f)
     return metrics
 
@@ -132,6 +142,7 @@ with st.spinner("Loading NSE Regime Engine..."):
     log_returns, volatility, price_levels, events_df, disagreements = load_parquet_data()
     baseline_nifty, nh_nifty = load_nifty_states()
     hmm_metrics = load_hmm_metrics()
+    hmm_metrics_avg = load_hmm_metrics_avg()
     xgb_model = load_xgb()
     xgb_features = load_xgb_features()
 
@@ -165,12 +176,12 @@ if hmm_metrics and "^NSEI" in log_returns.columns:
 else:
     st.sidebar.text("Baseline HMM LL: N/A")
 
-A_normal = hmm_metrics.get("A_normal")
-A_event = hmm_metrics.get("A_event")
+A_normal = hmm_metrics_avg.get("A_normal_avg")
+A_event = hmm_metrics_avg.get("A_event_avg")
 if A_normal and A_event:
     A_normal = np.array(A_normal)
     A_event = np.array(A_event)
-    norm_diff = np.linalg.norm(A_event - A_normal, ord='fro')
+    norm_diff = hmm_metrics_avg.get("frobenius_norm", np.linalg.norm(A_event - A_normal, ord='fro'))
     st.sidebar.text(f"A_event - A_norm (Fro): {norm_diff:.4f}")
 
 
@@ -370,7 +381,7 @@ if selected_ticker in price_levels.columns and not stock_states.empty:
 # SECTION 4: TRANSITION MATRIX HEATMAPS
 # ---------------------------------------------------------
 st.markdown("### Regime Transition Probabilities")
-st.markdown("Non-Homogeneous HMMs adapt their transition matrix during corporate event windows. Notice how transitions into the `Bear/Crash` state become highly elevated.")
+st.markdown("Non-Homogeneous HMMs adapt their transition matrix during corporate event windows. The true aggregate across all 17 validated stocks reveals that transitions into the `Bear/Crash` state actually **decrease slightly** during event windows, contrary to what the NIFTY-only baseline suggested.")
 
 if A_normal is not None and A_event is not None:
     col_t1, col_t2 = st.columns(2)
