@@ -107,15 +107,6 @@ def load_stock_states(symbol):
         return pd.read_parquet(path)
     return pd.DataFrame()
 
-@st.cache_resource
-def load_hmm_metrics():
-    # Note: Transition matrices in hmm_metrics.json are known-broken (random Dirichlet noise)
-    # due to NIFTY lacking event indicators during EM fit. We only load it for LL stats.
-    metrics = {}
-    if (DATA_DIR / "hmm_metrics.json").exists():
-        with open(DATA_DIR / "hmm_metrics.json", "r") as f:
-            metrics = json.load(f)
-    return metrics
 
 @st.cache_resource
 def load_hmm_metrics_avg():
@@ -142,7 +133,7 @@ def load_xgb_features():
 with st.spinner("Loading NSE Regime Engine..."):
     log_returns, volatility, price_levels, events_df, disagreements = load_parquet_data("v2")
     baseline_nifty, nh_nifty = load_nifty_states()
-    hmm_metrics = load_hmm_metrics()
+
     hmm_metrics_avg = load_hmm_metrics_avg()
     xgb_model = load_xgb()
     xgb_features = load_xgb_features()
