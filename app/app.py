@@ -173,8 +173,7 @@ if A_normal and A_event:
     norm_diff = np.linalg.norm(A_event - A_normal, ord='fro')
     st.sidebar.text(f"A_event - A_norm (Fro): {norm_diff:.4f}")
 
-st.sidebar.text("BIC Scores (N=2,3,4):")
-st.sidebar.text("N=2: -12854.3, N=3: -13005.1\nN=4: -12950.2")
+
     
 st.sidebar.text(f"Total Disagreements: {len(disagreements)}")
 
@@ -197,7 +196,7 @@ if not verified_manual_df.empty and 'verdict' in verified_manual_df.columns:
     unique_events = verified_manual_df['event_type'].nunique()
     
     stats_text1 = f"The NH-HMM was validated against {len(verified_manual_df)} hand-verified cases across {unique_symbols} stocks and {unique_events} event types with a {justified_rate*100:.1f}% justified rate (excluding Uncertain)."
-    stats_text2 = f"**NH-HMM justified in {justified_count} of {denom} hand-verified cases ({uncertain_count} marked Uncertain out of {total_disagreements} total disagreement cases in the dataset)**"
+    stats_text2 = f"**NH-HMM justified in {justified_count} of {denom} hand-verified cases with a clear beat/miss ({uncertain_count} additional cases marked Uncertain; {total_disagreements} total disagreement cases exist in the full dataset)**"
 else:
     stats_text1 = "Validation metrics are pending manual verification."
     stats_text2 = "**Verification pending**"
