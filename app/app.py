@@ -384,23 +384,39 @@ st.markdown("### Regime Transition Probabilities")
 st.markdown("Non-Homogeneous HMMs adapt their transition matrix during corporate event windows. The true aggregate across all 17 validated stocks reveals that transitions into the `Bear/Crash` state actually **decrease slightly** during event windows, contrary to what the NIFTY-only baseline suggested.")
 
 if A_normal is not None and A_event is not None:
+    matrix_options = ["Average (17 stocks)"] + [t for t in TICKERS if t != "TATAMOTORS.NS"]
+    selected_matrix_view = st.selectbox("Select Matrix View", matrix_options, index=0)
+    
+    if selected_matrix_view == "Average (17 stocks)":
+        st.caption("This heatmap shows the 17-stock average. Individual stocks vary substantially -- standard deviation exceeds the mean difference in every transition cell, meaning no single stock closely matches this average pattern. See the per-stock breakdown for actual stock-level dynamics.")
+        disp_A_normal, disp_A_event = A_normal, A_event
+    else:
+        matrix_path = DATA_DIR / f"matrices_{selected_matrix_view}.json"
+        if matrix_path.exists():
+            with open(matrix_path, "r") as f:
+                d = json.load(f)
+                disp_A_normal, disp_A_event = np.array(d["A_normal"]), np.array(d["A_event"])
+        else:
+            st.warning(f"No matrices found for {selected_matrix_view}.")
+            disp_A_normal, disp_A_event = A_normal, A_event
+
     col_t1, col_t2 = st.columns(2)
     
-    fig_norm = px.imshow(A_normal, 
+    fig_norm = px.imshow(disp_A_normal, 
                          labels=dict(x="To State", y="From State", color="Prob"),
                          x=["Bear", "Neutral", "Bull"], y=["Bear", "Neutral", "Bull"],
                          text_auto='.2f', color_continuous_scale='Blues')
-    fig_norm.update_layout(title="A_normal (Regular Days)", template="plotly_dark")
+    fig_norm.update_layout(title=f"A_normal ({selected_matrix_view})", template="plotly_dark")
     col_t1.plotly_chart(fig_norm, use_container_width=True)
     
-    fig_event = px.imshow(A_event, 
+    fig_event = px.imshow(disp_A_event, 
                           labels=dict(x="To State", y="From State", color="Prob"),
                           x=["Bear", "Neutral", "Bull"], y=["Bear", "Neutral", "Bull"],
                           text_auto='.2f', color_continuous_scale='Reds')
-    fig_event.update_layout(title="A_event (Event Window ±5 days)", template="plotly_dark")
+    fig_event.update_layout(title=f"A_event ({selected_matrix_view})", template="plotly_dark")
     col_t2.plotly_chart(fig_event, use_container_width=True)
     
-    norm_diff = np.linalg.norm(A_event - A_normal, ord='fro')
+    norm_diff = np.linalg.norm(disp_A_event - disp_A_normal, ord='fro')
     st.markdown(f"**Frobenius Norm Difference (A_event - A_normal):** `{norm_diff:.4f}`")
 
 # ---------------------------------------------------------
