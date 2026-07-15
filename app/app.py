@@ -178,13 +178,36 @@ st.sidebar.text("N=2: -12854.3, N=3: -13005.1\nN=4: -12950.2")
     
 st.sidebar.text(f"Total Disagreements: {len(disagreements)}")
 
+verified_manual_df = pd.DataFrame()
+if os.path.exists("data/disagreement_table_verified_MANUAL.csv"):
+    try:
+        verified_manual_df = pd.read_csv("data/disagreement_table_verified_MANUAL.csv")
+    except:
+        pass
+
+if not verified_manual_df.empty and 'verdict' in verified_manual_df.columns:
+    justified_count = (verified_manual_df['verdict'] == 'Justified').sum()
+    not_justified_count = (verified_manual_df['verdict'] == 'Not Justified').sum()
+    uncertain_count = (verified_manual_df['verdict'] == 'Uncertain').sum()
+    denom = justified_count + not_justified_count
+    justified_rate = justified_count / denom if denom > 0 else 0
+    total_disagreements = len(disagreements)
+    
+    unique_symbols = verified_manual_df['symbol'].nunique()
+    unique_events = verified_manual_df['event_type'].nunique()
+    
+    stats_text1 = f"The NH-HMM was validated against {len(verified_manual_df)} hand-verified cases across {unique_symbols} stocks and {unique_events} event types with a {justified_rate*100:.1f}% justified rate (excluding Uncertain)."
+    stats_text2 = f"**NH-HMM justified in {justified_count} of {denom} hand-verified cases ({uncertain_count} marked Uncertain out of {total_disagreements} total disagreement cases in the dataset)**"
+else:
+    stats_text1 = "Validation metrics are pending manual verification."
+    stats_text2 = "**Verification pending**"
+
 with st.sidebar.expander("Methodology", expanded=False):
-    st.markdown("""
+    st.markdown(f"""
     This engine applies a Non-Homogeneous HMM that switches between two
     transition matrices: A_normal for regular trading days and A_event for
     days within ±5 trading days of a scheduled corporate event (Results,
-    Board Meeting, AGM). The NH-HMM was validated against 36 event-date
-    disagreements across DRREDDY, ONGC, and RELIANCE with 97.2% accuracy.
+    Board Meeting, AGM). {stats_text1}
     """)
 
 if len(date_range) != 2:
@@ -439,7 +462,7 @@ if not stock_states.empty and selected_ticker in log_returns.columns:
 # SECTION 6: DISAGREEMENT TABLE
 # ---------------------------------------------------------
 st.markdown("### Model Disagreements on Event Dates")
-st.markdown("**NH-HMM correct rate = 97.2%** *(hardcoded from manual verification)*")
+st.markdown(stats_text2)
 
 if not disagreements.empty:
     disp_filter = st.selectbox("Filter Disagreements by Stock", ["All"] + TICKERS)
