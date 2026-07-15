@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -164,17 +165,18 @@ date_range = st.sidebar.date_input("Date Range", value=(default_start, max_date)
 st.sidebar.divider()
 
 st.sidebar.markdown("### Model Statistics")
-if hmm_metrics and "^NSEI" in log_returns.columns:
-    baseline_ll = hmm_metrics.get("baseline_ll", 0)
-    nh_ll = hmm_metrics.get("nh_ll", 0)
-    ll_imp = ((nh_ll - baseline_ll) / abs(baseline_ll)) * 100 if baseline_ll != 0 else 0
-    
-    st.sidebar.text(f"Baseline HMM LL: {baseline_ll:.2f}")
-    st.sidebar.text(f"NH-HMM LL: {nh_ll:.2f}")
-    st.sidebar.text(f"LL Improvement: {ll_imp:.2f}%")
+if not disagreements.empty and "baseline_ll" in disagreements.columns and "nh_ll" in disagreements.columns:
+    ll_df = disagreements[['symbol', 'baseline_ll', 'nh_ll']].drop_duplicates()
+    if not ll_df.empty:
+        ll_df['ll_imp'] = ((ll_df['nh_ll'] - ll_df['baseline_ll']) / ll_df['baseline_ll'].abs()) * 100
+        avg_imp = ll_df['ll_imp'].mean()
+        num_beat = (ll_df['nh_ll'] > ll_df['baseline_ll']).sum()
+        total_stocks = len(ll_df)
+        st.sidebar.markdown(f"**NH-HMM outperforms baseline HMM in log-likelihood for {num_beat} of {total_stocks} stocks**")
+        st.sidebar.text(f"(average improvement: {avg_imp:.2f}%)")
+
+if "^NSEI" in log_returns.columns:
     st.sidebar.text(f"Training Days (T): {len(log_returns[['^NSEI']].dropna())}")
-else:
-    st.sidebar.text("Baseline HMM LL: N/A")
 
 A_normal = hmm_metrics_avg.get("A_normal_avg")
 A_event = hmm_metrics_avg.get("A_event_avg")
@@ -182,7 +184,7 @@ if A_normal and A_event:
     A_normal = np.array(A_normal)
     A_event = np.array(A_event)
     norm_diff = hmm_metrics_avg.get("frobenius_norm", np.linalg.norm(A_event - A_normal, ord='fro'))
-    st.sidebar.text(f"A_event - A_norm (Fro): {norm_diff:.4f}")
+    st.sidebar.text(f"17-stock avg (Fro): {norm_diff:.4f}")
 
 
     
@@ -521,11 +523,7 @@ if not disagreements.empty:
             return [''] * len(row)
             
         st.dataframe(disp_df.style.apply(color_code, axis=1), use_container_width=True)
-        
-        if 'nh_ll' in disagreements.columns and 'baseline_ll' in disagreements.columns:
-            total_nh_ll = disagreements['nh_ll'].sum()
-            total_base_ll = disagreements['baseline_ll'].sum()
-            st.markdown(f"**Total NH-HMM Log-Likelihood Improvement over Baseline:** `{total_nh_ll - total_base_ll:.2f}`")
+
 
 # ---------------------------------------------------------
 # SECTION 7: SHAP PANEL
