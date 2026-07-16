@@ -1,6 +1,6 @@
 # NSE Event-Conditioned Regime-Switching Engine
 
-This repository contains the complete implementation for the 14-day quantitative research project exploring a **Non-Homogeneous Hidden Markov Model (NH-HMM)** tailored to the Indian equity market (NSE). 
+This repository contains the complete implementation for the quantitative research project exploring a **Non-Homogeneous Hidden Markov Model (NH-HMM)** tailored to the Indian equity market (NSE). 
 
 ## Motivating Gap
 Standard HMMs assume a homogeneous (constant) transition matrix over time. In financial markets, however, regime shifts (e.g. from Bull to Bear) are significantly more likely to occur immediately following scheduled information disclosure events such as quarterly earnings or board meetings. 
